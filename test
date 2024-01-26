@@ -1,0 +1,163 @@
+#!/usr/bin/python3
+
+import argparse
+import docker
+import time
+from prettytable import PrettyTable
+import subprocess
+
+class DockerAPI:
+    def __init__(self, name):
+        # Connect to the Docker API
+        self.name = name
+        self.client = docker.from_env()
+
+    def run_image(self, detach=True, privileged=True):
+        # Run a container based on a given image
+        try:
+            # print("[*]Acquiring image: " + image)
+            time.sleep(2)
+
+            # Define volume mount if a volume name is provided
+            volume_mount = {self.name: {'bind': "/home/"+self.name, 'mode': 'rw'}} if self.name else None
+          
+            container = self.client.containers.run(
+                "mesh:latest",
+                name=self.name,
+                detach=detach,
+                hostname="Container-Mesh",
+                privileged=privileged,  # Set privileged mode
+                volumes=volume_mount  # Mount the volume if provided
+            )
+
+            print("[*]Setting " + self.name + " to privileged mode.")
+            time.sleep(2)
+            print("[*]Container started with ID: " + container.id)
+            return container
+        except docker.errors.APIError:
+            print(f"Please check the log and try again.")
+            return None
+
+    def get_container_logs(self, container_identifier):
+        # Get logs from a container by ID or name
+        try:
+            container = self.client.containers.get(container_identifier)
+        except docker.errors.NotFound:
+            print(f"Container with ID or name '{container_identifier}' not found.")
+            return
+
+        logs = container.logs()
+        return logs
+
+    def stop_and_remove_container(self):
+        # Stop and remove a container by ID or name
+        try:
+            container = self.client.containers.get(self.name)
+        except docker.errors.NotFound:
+            print(f"Container with ID or name '{self.name}' not found.")
+            return
+
+        container.stop()
+        container.remove()
+
+    def list_containers(self):
+        # List containers and print as a table
+        containers = self.client.containers.list()
+        if not containers:
+            print("No containers found.")
+            return
+        table = PrettyTable()
+        table.field_names = ["#","Container ID", "Name", "Status"]
+        for index, container in enumerate(containers, start=1):
+            table.add_row([index, container.id, container.name, container.status])
+        print(table)
+    
+    def create_user(self):
+        # Connect to the Docker API
+        client = docker.from_env()
+
+        try:
+            # Retrieve the container ID using the container name
+            container_id = client.containers.get(self.name).id
+
+            # Access the running container
+            container = client.containers.get(container_id)
+
+            # Create a new user
+            container.exec_run(['useradd', '-m', '-p', self.name, self.name])
+
+            print(f"User '{self.name}' created successfully in container: {self.name}")
+
+        except docker.errors.NotFound:
+            print(f"Container with name '{self.name}' not found.")
+        except Exception as e:
+            print(f"An error occurred: {e}")
+
+    def get_wireguard_ips_with_names(self):
+        # Get all running container IDs
+        container_ids = subprocess.check_output(["docker", "ps", "-q"]).decode("utf-8").split()
+
+        # Iterate over each container ID
+        for container_id in container_ids:
+            # Get the container name
+            container_name = (
+                subprocess.check_output(["docker", "inspect", "--format", "{{.Name}}", container_id])
+                .decode("utf-8")
+                .strip()[1:]
+            )
+
+            # Get the WireGuard interface IP address if it exists
+            try:
+                wg_ip = (
+                    subprocess.check_output(
+                        ["docker", "exec", container_id, "ip", "-o", "-4", "addr", "show", "wg0"]
+                    )
+                    .decode("utf-8")
+                    .split()[3]
+                    .split("/")[0]
+                )
+
+                # Print container ID, container name, and WireGuard IP if available
+                print(
+                    f"Container ID: {container_id}, Container Name: {container_name}, WireGuard IP: {wg_ip}"
+                )
+
+            except subprocess.CalledProcessError:
+                print(
+                    f"Container ID: {container_id}, Container Name: {container_name}, WireGuard IP not found"
+                )
+
+
+def main():
+    parser = argparse.ArgumentParser(description='DockerAPI Script')
+    parser.add_argument('action', choices=['run', 'logs', 'stop_remove', 'list', 'create_user', 'get_wireguard_ips'],
+                        help='Action to perform (run, logs, stop_remove, list, create_user, get_wireguard_ips)')
+    parser.add_argument('--name', help='Container name')
+
+    args = parser.parse_args()
+
+    if args.name is None and args.action in ['run', 'logs', 'stop_remove', 'create_user', 'get_wireguard_ips']:
+        parser.error('--name is required for the specified action.')
+
+    docker_api = DockerAPI(args.name)
+
+    if args.action == 'run':
+        container = docker_api.run_image()
+        if container:
+            print(f"Container '{args.name}' is running.")
+    elif args.action == 'logs':
+        logs = docker_api.get_container_logs(args.name)
+        if logs:
+            print(logs.decode("utf-8"))
+    elif args.action == 'stop_remove':
+        docker_api.stop_and_remove_container()
+        print(f"Container '{args.name}' stopped and removed.")
+    elif args.action == 'list':
+        docker_api.list_containers()
+    elif args.action == 'create_user':
+        docker_api.create_user()
+    elif args.action == 'get_wireguard_ips':
+        docker_api.get_wireguard_ips_with_names()
+
+if __name__ == "__main__":
+    main()
